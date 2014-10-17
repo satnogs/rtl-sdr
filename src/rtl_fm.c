@@ -485,15 +485,15 @@ int polar_disc_lut(int ar, int aj, int br, int bj)
 	/* special cases */
 	if (cr == 0 || cj == 0) {
 		if (cr == 0 && cj == 0)
-			{return 0;}
+		{return 0;}
 		if (cr == 0 && cj > 0)
-			{return 1 << 13;}
+		{return 1 << 13;}
 		if (cr == 0 && cj < 0)
-			{return -(1 << 13);}
+		{return -(1 << 13);}
 		if (cj == 0 && cr > 0)
-			{return 0;}
+		{return 0;}
 		if (cj == 0 && cr < 0)
-			{return 1 << 14;}
+		{return 1 << 14;}
 	}
 
 	/* real range -32768 - 32768 use 64x range -> absolute maximum: 2097152 */
@@ -519,21 +519,21 @@ void fm_demod(struct demod_state *fm)
 	int i, pcm;
 	int16_t *lp = fm->lowpassed;
 	pcm = polar_discriminant(lp[0], lp[1],
-		fm->pre_r, fm->pre_j);
+				 fm->pre_r, fm->pre_j);
 	fm->result[0] = (int16_t)pcm;
 	for (i = 2; i < (fm->lp_len-1); i += 2) {
 		switch (fm->custom_atan) {
 		case 0:
 			pcm = polar_discriminant(lp[i], lp[i+1],
-				lp[i-2], lp[i-1]);
+						 lp[i-2], lp[i-1]);
 			break;
 		case 1:
 			pcm = polar_disc_fast(lp[i], lp[i+1],
-				lp[i-2], lp[i-1]);
+					      lp[i-2], lp[i-1]);
 			break;
 		case 2:
 			pcm = polar_disc_lut(lp[i], lp[i+1],
-				lp[i-2], lp[i-1]);
+					     lp[i-2], lp[i-1]);
 			break;
 		}
 		fm->result[i/2] = (int16_t)pcm;
@@ -630,7 +630,7 @@ int mad(int16_t *samples, int len, int step)
 {
 	int i=0, sum=0, ave=0;
 	if (len == 0)
-		{return 0;}
+	{return 0;}
 	for (i=0; i<len; i+=step) {
 		sum += samples[i];
 	}
@@ -741,9 +741,9 @@ void full_demod(struct demod_state *d)
 		/* droop compensation */
 		if (d->comp_fir_size == 9 && ds_p <= CIC_TABLE_MAX) {
 			generic_fir(d->lowpassed, d->lp_len,
-				cic_9_tables[ds_p], d->droop_i_hist);
+				    cic_9_tables[ds_p], d->droop_i_hist);
 			generic_fir(d->lowpassed+1, d->lp_len-1,
-				cic_9_tables[ds_p], d->droop_q_hist);
+				    cic_9_tables[ds_p], d->droop_q_hist);
 		}
 	} else {
 		low_pass(d);
@@ -1057,7 +1057,7 @@ int main(int argc, char **argv)
 			if (controller.freq_len >= FREQUENCIES_LIMIT) {
 				break;}
 			if (strchr(optarg, ':'))
-				{frequency_range(&controller, optarg);}
+			{frequency_range(&controller, optarg);}
 			else
 			{
 				controller.freqs[controller.freq_len] = (uint32_t)atofs(optarg);
@@ -1262,3 +1262,10 @@ int main(int argc, char **argv)
 }
 
 // vim: tabstop=8:softtabstop=8:shiftwidth=8:noexpandtab
+
+/* Local Variables: */
+/* mode: c */
+/* indent-tabs-mode: t */
+/* tab-width: 8 */
+/* c-basic-offset: 8 */
+/* End: */

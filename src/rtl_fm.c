@@ -974,12 +974,20 @@ static void *sock_parse(void *arg)
 
 	/* Read loop */
 	while (fgets(command, sizeof(command), fsock_in)) {
-		if (sscanf(command, "F %d\n", &freq) == 1) {
-			controller.freqs[0] = freq;
-			optimal_settings(controller.freqs[0], demod.rate_in);
-			verbose_set_frequency(dongle.dev, dongle.freq);
-			fprintf(fsock_out, "RPRT 0\n");
+		switch (command[0]) {
+		case 'F':
+			if (sscanf(command, "F %d\n", &freq) == 1) {
+				controller.freqs[0] = freq;
+				optimal_settings(controller.freqs[0], demod.rate_in);
+				verbose_set_frequency(dongle.dev, dongle.freq);
+				fprintf(fsock_out, "RPRT 0\n");
+				fflush(fsock_out);
+			}
+			break;
+		case 'f':
+			fprintf(fsock_out, "%d\n", controller.freqs[0]);
 			fflush(fsock_out);
+			break;
 		}
 	}
 

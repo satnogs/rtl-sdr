@@ -4,6 +4,7 @@
  * Copyright (C) 2012 by Hoernchen <la@tfc-server.de>
  * Copyright (C) 2012 by Kyle Keen <keenerd@gmail.com>
  * Copyright (C) 2013 by Elias Oenal <EliasOenal@gmail.com>
+ * Copyright (C) 2014 by Vasilis Tsiligiannis <acinonyx@openwrt.gr>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -53,6 +54,10 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -77,6 +82,8 @@
 
 #define DEFAULT_SAMPLE_RATE		24000
 #define DEFAULT_BUF_LENGTH		(1 * 16384)
+#define RIGCTL_PORT                     "4532"
+#define RIGCTL_LISTEN_BACKLOG           100
 #define MAXIMUM_OVERSAMPLE		16
 #define MAXIMUM_BUF_LENGTH		(MAXIMUM_OVERSAMPLE * DEFAULT_BUF_LENGTH)
 #define AUTO_GAIN			-100
@@ -173,11 +180,27 @@ struct controller_state
 	pthread_mutex_t hop_m;
 };
 
+struct sock_info
+{
+	int sock;
+	struct sockaddr_in client_addr;
+	socklen_t client_len;
+};
+
+struct sock_state
+{
+	int exit_flag;
+	pthread_t thread;
+	char *server_addr;
+	char *port;
+};
+
 // multiple of these, eventually
 struct dongle_state dongle;
 struct demod_state demod;
 struct output_state output;
 struct controller_state controller;
+struct sock_state sock;
 
 void usage(void)
 {
@@ -919,6 +942,151 @@ static void *controller_thread_fn(void *arg)
 	return 0;
 }
 
+static void *sock_parse(void *arg)
+{
+	struct sock_info *s = (struct sock_info *) arg;
+	FILE *fsock_in;
+	FILE *fsock_out;
+	int r;
+	char command[100];
+	uint32_t freq;
+
+	/* Open socket for reading */
+	fsock_in = fdopen(s->sock, "rb");
+	if (!fsock_in) {
+		fprintf(stderr, "ERROR fdopen in: %s\n", strerror(errno));
+		close(s->sock);
+		free(arg);
+		pthread_exit(NULL);
+		return NULL;
+	}
+
+	/* Open socket for writing */
+	fsock_out = fdopen(s->sock, "wb");
+	if (!fsock_out) {
+		fprintf(stderr, "ERROR fdopen out: %s\n", strerror(errno));
+		fclose(fsock_in);
+		close(s->sock);
+		free(arg);
+		pthread_exit(NULL);
+		return NULL;
+	}
+
+	/* Read loop */
+	while (fgets(command, sizeof(command), fsock_in)) {
+		if (sscanf(command, "F %d\n", &freq) == 1) {
+			controller.freqs[0] = freq;
+			optimal_settings(controller.freqs[0], demod.rate_in);
+			verbose_set_frequency(dongle.dev, dongle.freq);
+			fprintf(fsock_out, "RPRT 0\n");
+			fflush(fsock_out);
+		}
+	}
+
+	/* Cleanup */
+	fprintf(stderr, "Connection closed from %s:%d\n",
+		inet_ntoa(s->client_addr.sin_addr),
+		ntohs(s->client_addr.sin_port));
+	fclose(fsock_in);
+	fclose(fsock_out);
+	close(s->sock);
+	free(arg);
+	pthread_exit(NULL);
+
+	return NULL;
+}
+
+static void *sock_thread_fn(void *arg)
+{
+	struct sock_state *s = arg;
+	struct addrinfo hints, *res,*rp;
+	int listen_fd = -1;
+	int r;
+
+	/* Initialize addrinfo struct */
+	bzero(&hints, sizeof(struct addrinfo));
+
+	/* Hints for addrinfo */
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_flags = AI_PASSIVE;
+	hints.ai_protocol = 0;
+
+	/* Get socket address structure */
+	r = getaddrinfo(s->server_addr, s->port, &hints, &res);
+	if (r != 0) {
+		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(r));
+		return NULL;
+	}
+
+	/* Bind on first available address */
+	for (rp = res; rp != NULL; rp = rp->ai_next) {
+		listen_fd = socket(rp->ai_family, rp->ai_socktype,
+				   rp->ai_protocol);
+		if (listen_fd == -1)
+			continue;
+		if (bind(listen_fd, rp->ai_addr, rp->ai_addrlen) == 0)
+			break;
+		close(listen_fd);
+	}
+	freeaddrinfo(res);
+	if (listen_fd < 0) {
+		perror("ERROR: opening socket");
+		return NULL;
+	}
+	if (rp == NULL) {
+		fprintf(stderr, "ERROR: Could not bind\n");
+		close(listen_fd);
+		return NULL;
+	}
+
+	/* Listen for connections */
+	if (listen(listen_fd, RIGCTL_LISTEN_BACKLOG) < 0) {
+		fprintf(stderr, "ERROR listen: %s\n", strerror(errno));
+		return NULL;
+	}
+
+	while (!do_exit) {
+		pthread_t thread;
+		pthread_attr_t attr;
+		struct sock_info *sock_info;
+
+		/* Allocate memory for new socket and client address */
+		sock_info = malloc(sizeof(struct sock_info));
+		if (!sock_info) {
+			fprintf(stderr, "ERROR malloc: %s\n", strerror(errno));
+			break;
+		}
+
+		/* Accept new connection */
+		sock_info->client_len = sizeof(sock_info->client_addr);
+		sock_info->sock = accept(listen_fd, (struct sockaddr *) &sock_info->client_addr,
+				   &sock_info->client_len);
+		if (sock_info->sock < 0) {
+			fprintf(stderr, "ERROR accept: %s\n", strerror(errno));
+			free(sock_info);
+			break;
+		}
+		fprintf(stderr, "Connection opened from %s:%d\n",
+			inet_ntoa(sock_info->client_addr.sin_addr),
+			ntohs(sock_info->client_addr.sin_port));
+
+		/* Create detached thread for connection */
+		pthread_attr_init(&attr);
+		pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+		r = pthread_create(&thread, &attr, sock_parse, sock_info);
+		if (r != 0) {
+			fprintf(stderr, "ERROR pthread_create: %s\n", strerror(r));
+			close(sock_info->sock);
+			free(sock_info);
+		}
+		pthread_attr_destroy(&attr);
+	}
+	close(listen_fd);
+
+	return NULL;
+}
+
 void frequency_range(struct controller_state *s, char *arg)
 {
 	char *start, *stop, *step;
@@ -1015,6 +1183,12 @@ void controller_cleanup(struct controller_state *s)
 	pthread_mutex_destroy(&s->hop_m);
 }
 
+void sock_init(struct sock_state *s)
+{
+	s->server_addr = NULL;
+	s->port = RIGCTL_PORT;
+}
+
 void sanity_checks(void)
 {
 	if (controller.freq_len == 0) {
@@ -1046,6 +1220,7 @@ int main(int argc, char **argv)
 	demod_init(&demod);
 	output_init(&output);
 	controller_init(&controller);
+	sock_init(&sock);
 
 	while ((opt = getopt(argc, argv, "d:f:g:s:b:l:o:t:r:p:E:F:A:M:h")) != -1) {
 		switch (opt) {
@@ -1230,6 +1405,7 @@ int main(int argc, char **argv)
 	pthread_create(&output.thread, NULL, output_thread_fn, (void *)(&output));
 	pthread_create(&demod.thread, NULL, demod_thread_fn, (void *)(&demod));
 	pthread_create(&dongle.thread, NULL, dongle_thread_fn, (void *)(&dongle));
+	pthread_create(&sock.thread, NULL, sock_thread_fn, (void *)(&sock));
 
 	while (!do_exit) {
 		usleep(100000);

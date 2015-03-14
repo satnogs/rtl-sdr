@@ -22,6 +22,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -42,10 +43,14 @@
 #include "rtl-sdr.h"
 #include "convenience/convenience.h"
 
+#ifdef __APPLE__
+#include <sys/time.h>
+#else
+#include <time.h>
+#endif
+
 #ifdef _WIN32
 #pragma comment(lib, "ws2_32.lib")
-
-typedef int socklen_t;
 
 #else
 #define closesocket close
@@ -53,6 +58,21 @@ typedef int socklen_t;
 #define SOCKET int
 #define SOCKET_ERROR -1
 #endif
+
+
+#define MHZ(x)	((x)*1000*1000)
+
+#define PPM_DURATION			10
+#define PPM_DUMP_TIME			5
+
+static unsigned int ppm_duration = PPM_DURATION;
+
+static enum {
+	NO_BENCHMARK,
+	PPM_BENCHMARK
+} test_mode = NO_BENCHMARK;
+
+//typedef int socklen_t;
 
 static SOCKET s;
 
@@ -95,7 +115,8 @@ void usage(void)
 		"\t[-b number of buffers (default: 15, set by library, buffer size (32kB) \n"
 		"\t[-n max number of linked list buffers to keep (default: 500)]\n"
 		"\t[-d device index (default: 0)]\n"
-		"\t[-P ppm_error (default: 0)]\n");
+		"\t[-P ppm_error correction(default: 0)]\n"
+		"\t[-t test samplerate\n");
 	exit(1);
 }
 
@@ -141,8 +162,78 @@ static void sighandler(int signum)
 }
 #endif
 
+#ifndef _WIN32
+static int ppm_gettime(struct timespec *ts)
+{
+	int rv = ENOSYS;
+
+#ifdef __unix__
+	rv = clock_gettime(CLOCK_MONOTONIC, ts);
+#elif __APPLE__
+	struct timeval tv;
+
+	rv = gettimeofday(&tv, NULL);
+	ts->tv_sec = tv.tv_sec;
+	ts->tv_nsec = tv.tv_usec * 1000;
+#endif
+	return rv;
+}
+
+static void ppm_test(uint32_t len)
+{
+	static uint64_t nsamples = 0;
+	static uint64_t interval = 0;
+	static uint64_t nsamples_total = 0;
+	static uint64_t interval_total = 0;
+	struct timespec ppm_now;
+	static struct timespec ppm_recent;
+	static enum {
+		PPM_INIT_NO,
+		PPM_INIT_DUMP,
+		PPM_INIT_RUN
+	} ppm_init = PPM_INIT_NO;
+
+	ppm_gettime(&ppm_now);
+	if (ppm_init != PPM_INIT_RUN) {
+		/*
+		 * Kyle Keen wrote:
+		 * PPM_DUMP_TIME throws out the first N seconds of data.
+		 * The dongle's PPM is usually very bad when first starting up,
+		 * typically incorrect by more than twice the final value.
+		 * Discarding the first few seconds allows the value to stabilize much faster.
+		*/
+		if (ppm_init == PPM_INIT_NO) {
+			ppm_recent.tv_sec = ppm_now.tv_sec + PPM_DUMP_TIME;
+			ppm_init = PPM_INIT_DUMP;
+			return;
+		}
+		if (ppm_init == PPM_INIT_DUMP && ppm_recent.tv_sec < ppm_now.tv_sec)
+			return;
+		ppm_recent.tv_sec = ppm_now.tv_sec;
+		ppm_recent.tv_nsec = ppm_now.tv_nsec;
+		ppm_init = PPM_INIT_RUN;
+		return;
+	}
+	nsamples += (uint64_t)(len / 2UL);
+	interval = (uint64_t)(ppm_now.tv_sec - ppm_recent.tv_sec);
+	if (interval < ppm_duration)
+		return;
+	interval *= 1000000000UL;
+	interval += (int64_t)(ppm_now.tv_nsec - ppm_recent.tv_nsec);
+	nsamples_total += nsamples;
+	interval_total += interval;
+	printf("real sample rate: %i \n",
+		(int)((1000000000UL * nsamples) / interval));
+	ppm_recent.tv_sec = ppm_now.tv_sec;
+	ppm_recent.tv_nsec = ppm_now.tv_nsec;
+	nsamples = 0;
+}
+#endif
+
+
 void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 {
+
 	if(!do_exit) {
 		struct llist *rpt = (struct llist*)malloc(sizeof(struct llist));
 		rpt->data = (char*)malloc(len);
@@ -184,6 +275,10 @@ void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 		pthread_cond_signal(&cond);
 		pthread_mutex_unlock(&ll_mutex);
 	}
+	#ifndef _WIN32
+	if (test_mode == PPM_BENCHMARK)
+		ppm_test(len);
+	#endif
 }
 
 static void *tcp_worker(void *arg)
@@ -391,7 +486,7 @@ int main(int argc, char **argv)
 	struct sigaction sigact, sigign;
 #endif
 
-	while ((opt = getopt(argc, argv, "a:p:f:g:s:b:n:d:P:")) != -1) {
+	while ((opt = getopt(argc, argv, "a:p:f:g:s:b:n:d:P:t:")) != -1) {
 		switch (opt) {
 		case 'd':
 			dev_index = verbose_device_search(optarg);
@@ -420,6 +515,11 @@ int main(int argc, char **argv)
 			break;
 		case 'P':
 			ppm_error = atoi(optarg);
+			break;
+		case 't':
+			test_mode = PPM_BENCHMARK;
+			if (optarg)
+				ppm_duration = atoi(optarg);
 			break;
 		default:
 			usage();

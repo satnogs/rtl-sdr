@@ -74,13 +74,13 @@ void usage(void)
 	fprintf(stderr,
 		"rtl_test, a benchmark tool for RTL2832 based DVB-T receivers\n\n"
 		"Usage:\n"
-		"\t[-s samplerate (default: 2048000 Hz)]\n"
+		"\t[-s [Hz] samplerate (default: 2048000 Hz)]\n"
 		"\t[-d device_index (default: 0)]\n"
 		"\t[-t enable Elonics E4000 tuner benchmark]\n"
 #ifndef _WIN32
 		"\t[-p[seconds] enable PPM error measurement (default: 10 seconds)]\n"
 #endif
-		"\t[-b output_block_size (default: 16 * 16384)]\n"
+		"\t[-b [byte] output_block_size (default: 16 * 16384)]\n"
 		"\t[-S force sync output (default: async)]\n");
 	exit(1);
 }
@@ -316,9 +316,9 @@ int main(int argc, char **argv)
 		fprintf(stderr,
 			"Output block size wrong value, falling back to default\n");
 		fprintf(stderr,
-			"Minimal length: %u\n", MINIMAL_BUF_LENGTH);
+			"Minimal length: %u\n [byte]", MINIMAL_BUF_LENGTH);
 		fprintf(stderr,
-			"Maximal length: %u\n", MAXIMAL_BUF_LENGTH);
+			"Maximal length: %u\n [byte]", MAXIMAL_BUF_LENGTH);
 		out_block_size = DEFAULT_BUF_LENGTH;
 	}
 
